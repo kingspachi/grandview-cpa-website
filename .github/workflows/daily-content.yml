@@ -1,0 +1,70 @@
+name: Daily content
+
+# Generation runs once each morning; the publish poll only ever acts on rows a
+# human has already marked Approved in the review queue.
+on:
+  schedule:
+    - cron: '0 14 * * *' # 07:00 America/Los_Angeles (PDT); 06:00 during PST
+    - cron: '0 * * * *' # hourly approval poll
+  workflow_dispatch:
+    inputs:
+      task:
+        description: generate or publish
+        default: publish
+        type: choice
+        options: [generate, publish]
+
+concurrency:
+  group: daily-content
+  cancel-in-progress: false
+
+jobs:
+  content:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+      - name: Generate today's draft
+        if: github.event.schedule == '0 14 * * *' || inputs.task == 'generate'
+        run: npm run content:generate
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          QUEUE_DRIVER: sheets
+          SHEETS_SPREADSHEET_ID: ${{ secrets.SHEETS_SPREADSHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
+          GOOGLE_PRIVATE_KEY: ${{ secrets.GOOGLE_PRIVATE_KEY }}
+
+      - name: Publish anything approved
+        if: github.event.schedule == '0 * * * *' || inputs.task == 'publish'
+        run: npm run content:publish
+        env:
+          QUEUE_DRIVER: sheets
+          SHEETS_SPREADSHEET_ID: ${{ secrets.SHEETS_SPREADSHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
+          GOOGLE_PRIVATE_KEY: ${{ secrets.GOOGLE_PRIVATE_KEY }}
+          # Flip these on one phase at a time (see automation/README.md).
+          PUBLISH_BLOG: ${{ vars.PUBLISH_BLOG }}
+          PUBLISH_FACEBOOK: ${{ vars.PUBLISH_FACEBOOK }}
+          PUBLISH_LINKEDIN: ${{ vars.PUBLISH_LINKEDIN }}
+          FTP_HOST: ${{ secrets.FTP_HOST }}
+          FTP_USER: ${{ secrets.FTP_USER }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+          FACEBOOK_PAGE_ID: ${{ secrets.FACEBOOK_PAGE_ID }}
+          FACEBOOK_PAGE_ACCESS_TOKEN: ${{ secrets.FACEBOOK_PAGE_ACCESS_TOKEN }}
+          LINKEDIN_ORGANIZATION_ID: ${{ secrets.LINKEDIN_ORGANIZATION_ID }}
+          LINKEDIN_ACCESS_TOKEN: ${{ secrets.LINKEDIN_ACCESS_TOKEN }}
+
+      - name: Upload audit log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-log-${{ github.run_id }}
+          path: automation/data/audit-log.jsonl
+          if-no-files-found: ignore
+          retention-days: 90
